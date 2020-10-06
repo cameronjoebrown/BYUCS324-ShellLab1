@@ -169,9 +169,12 @@ int main(int argc, char **argv)
 void eval(char *cmdline) 
 {
     char *arguments[100];
-    int bgfg = parseline(cmdline, arguments);
+    int bg = parseline(cmdline, arguments);
     pid_t pid;
     pid_t pgid;
+    if(arguments[0] == NULL) {
+       return;
+    }
     if(builtin_cmd(arguments)) {
        return;
     }
@@ -180,25 +183,29 @@ void eval(char *cmdline)
     int stdout_redir[100];
     int num_cmds = parseargs(arguments, cmds, stdin_redir, stdout_redir);
     int p[2];
-    int r;
-    for(int i = 0; i < num_cmds; ++i) {
-       if(pipe(p) == -1) {
-          fprintf(stderr,"Pipe Failed");
-          return;
+    int lastRead;
+    for(int i = 0; i < num_cmds; i++) {
+       if(i < num_cmds - 1) {
+         if(pipe(p) == -1) {
+             fprintf(stderr,"Pipe Failed");
+             return;
+          }
        }
        pid = fork();
        if(pid == 0) {
-          if(i != num_cmds - 1) {
-            close(p[0]);
-            dup2(p[1], 1);
-
-            if(i > 0) {
-               dup2(r, 0);
-            }
+          if(i == 0) {
+             close(p[0]);
+             dup2(p[1],1);
+          }
+          else if(i < num_cmds - 1) {
+             close(p[0]);
+             dup2(p[1], 1);
+             dup2(lastRead, 0);
           }
           else {
-            dup2(r, 0);
+             dup2(lastRead, 0);
           }
+
           if(stdin_redir[i] >= 0) {
              FILE* in = fopen(arguments[stdin_redir[i]], "r");
 	     dup2(fileno(in), 0);
@@ -208,35 +215,37 @@ void eval(char *cmdline)
              dup2(fileno(out), 1);
           }
 
-          if(execve(arguments[cmds[0]], arguments, NULL) < 0) {
-             printf("%s: Command not found\n", arguments[cmds[0]]);
+          if(execve(arguments[cmds[i]], &arguments[cmds[i]], NULL) < 0) {
+             printf("%s: Command not found\n", arguments[cmds[i]]);
              return;
           }
        }
        else {  // if it is a parent
-           if(i != num_cmds - 1) {
-              if(i > 0) {
-                 close(p[1]);
-                 close(r);
-                 r = p[0];
-              }
-              else {
-                 close(p[1]);
-                 r = p[0];
-              }
-           }
-           else {
-              close(*p);
-           }
            if(i == 0) { // First iteration
                // Save the child's pid
                pgid = pid;
+               close(p[1]);
+               lastRead = p[0];
            }
-           // Set the group id of the current child to the pid of
-           // first command.
-           waitfg(pid);
+           else if(i < num_cmds - 1) {
+             close(p[1]);
+             close(lastRead);
+             lastRead = p[0];
+           }
+           else {
+              close(lastRead);
+           }
            setpgid(pid, pgid);
        }
+       //if(!bg) {
+         int status;
+         if(waitpid(-1, &status, 0) < 0) {
+            unix_error("waitfg: waitpid error");
+         }
+       //}
+       /*else {
+         printf("%d %s", pid, cmdline);
+       }*/
     }
     return;
 }
@@ -392,7 +401,6 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
-    waitpid(pid, NULL, 0);
     return;
 }
 
